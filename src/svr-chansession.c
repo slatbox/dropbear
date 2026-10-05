@@ -325,13 +325,12 @@ static void cleanupchansess(const struct Channel *channel) {
 
 	if (chansess->tty) {
 		/* write the utmp/wtmp login record */
-		li = chansess_login_alloc(chansess);
-
-		svr_raise_gid_utmp();
-		login_logout(li);
-		svr_restore_gid();
-
-		login_free_entry(li);
+		/* Minis/iSH: skip utmp/wtmp accounting (see login_login above). */
+		/* li = chansess_login_alloc(chansess); */
+		/* svr_raise_gid_utmp(); */
+		/* login_logout(li); */
+		/* svr_restore_gid(); */
+		/* login_free_entry(li); */
 
 		pty_release(chansess->tty);
 		m_free(chansess->tty);
@@ -846,8 +845,13 @@ static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
 			dropbear_exit("signal() error");
 		}
 		
-		/* redirect stdin/stdout/stderr */
-		close(chansess->master);
+		/* Minis/iSH: keep the master fd open (with FD_CLOEXEC) instead of
+		 * closing it here. iSH hangs up the pty slave as soon as the
+		 * master's refcount drops to zero, which races with the
+		 * TIOCSCTTY below and makes it fail with EIO. Holding the fd
+		 * until exec() keeps the pty alive during session setup; the
+		 * parent's copy is closed when the channel ends. */
+		fcntl(chansess->master, F_SETFD, FD_CLOEXEC);
 
 		pty_make_controlling_tty(&chansess->slave, chansess->tty);
 		
@@ -860,13 +864,14 @@ static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
 		/* write the utmp/wtmp login record - must be after changing the
 		 * terminal used for stdout with the dup2 above, otherwise
 		 * the wtmp login will not be recorded */
-		li = chansess_login_alloc(chansess);
-
-		svr_raise_gid_utmp();
-		login_login(li);
-		svr_restore_gid();
-
-		login_free_entry(li);
+		/* Minis/iSH: skip utmp/wtmp accounting. iSH has no working
+		 * utmp file (writes land on "/dev/null/wtmp"), and the login
+		 * helpers only produce spurious errors there. */
+		/* li = chansess_login_alloc(chansess); */
+		/* svr_raise_gid_utmp(); */
+		/* login_login(li); */
+		/* svr_restore_gid(); */
+		/* login_free_entry(li); */
 
 		/* Can now dup2 stderr. Messages from login_login() have gone
 		to the parent stderr */
@@ -922,7 +927,24 @@ static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
 		/* add a child pid */
 		addchildpid(chansess, pid);
 
-		close(chansess->slave);
+		/* Minis/iSH: do NOT close the slave here. iSH hangs up the pty
+		 * master as soon as the last non-master slave fd closes, which
+		 * races with the child's pty_make_controlling_tty() and makes
+		 * TIOCSCTTY fail with EIO. The leftover slave fd is harmless
+		 * (it just sits in the fd table; the child inherits its own). */
+		/* close(chansess->slave); */
+
+		/* Minis/iSH: keep a redundant CLOEXEC'd dup of the master fd.
+		 * The iSH kernel sometimes closes the channel's master fd
+		 * behind our back right after fork() (observed with
+		 * LD_PRELOAD fd tracing), which hangs up the pty and kills the
+		 * session. This dup keeps the pty alive for the connection. */
+		{
+			int keepalive = dup(chansess->master);
+			if (keepalive >= 0)
+				fcntl(keepalive, F_SETFD, FD_CLOEXEC);
+		}
+
 		channel->writefd = chansess->master;
 		channel->readfd = chansess->master;
 		/* don't need to set stderr here */

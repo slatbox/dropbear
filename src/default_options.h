@@ -46,7 +46,9 @@ IMPORTANT: Some options will require "make clean" after changes */
    vulnerabilities becomes harder. Re-exec causes slightly more memory use
    per connection.
    This option is ignored on non-Linux platforms at present */
-#define DROPBEAR_REEXEC 1
+/* Minis/iSH: iSH's emulation of fexecve() fails with EFAULT, so the
+ * re-exec fallback cannot work there. Disable it; plain fork is used. */
+#define DROPBEAR_REEXEC 0
 
 /* Include verbose debug output, enabled with -v at runtime (repeat to increase).
  * define which level of debug output you compile in
